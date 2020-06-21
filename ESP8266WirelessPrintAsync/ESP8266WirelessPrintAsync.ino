@@ -260,7 +260,7 @@ inline void lcd(const String text) {
 inline void ilcd(const String text) {
   if(lcdMode != LcdMode::LOG) return;
   lcdLines[0] = text;
-  drawLcd();
+  //drawLcd();
 }
 
 void drawLcd() {
@@ -286,7 +286,7 @@ void addLcdLog(String line) {
     lcdLines[i] = lcdLines[i+1];
   }
   lcdLines[N_LINES-1] = line;
-  drawLcd();
+  //drawLcd();
 }
 
 inline void playSound() {
@@ -599,7 +599,6 @@ ICACHE_RAM_ATTR void btChanged(uint8_t pin) {
       int t = cursorPos - lcdTopFile;
       if(t<0) lcdTopFile = cursorPos;
       if(t >= N_LINES) lcdTopFile = cursorPos-N_LINES+1;
-      //drawLcd();
     }
   }
 }
@@ -618,21 +617,34 @@ ICACHE_RAM_ATTR void bt2Changed() {
   btChanged(PIN_BT2);
 }
 
-ICACHE_RAM_ATTR void bt3Pressed() {
+ICACHE_RAM_ATTR void bt3Changed() {
   static long lastChange = millis();
+  static long lastPress;
   if(millis() < lastChange+10) return;
   lastChange = millis();
-  
-  if (isPrinting || !printerConnected) return ;
-  if (!files[cursorPos]) return;
-  uploadedFullname = files[cursorPos];
-  startPrint = true;
-  setLcdMode(LcdMode::LOG);
+
+  if(digitalRead(PIN_BT3) == LOW) {  
+    // pressed
+    lastPress = millis();
+  } else { // up
+    if(millis()-lastPress < 2000) {
+      if (isPrinting || !printerConnected) return ;
+      if (!files[cursorPos]) return;
+      uploadedFullname = "/"+files[cursorPos];
+      File ff = storageFS.open(uploadedFullname);
+      uploadedFileSize = ff.size();
+      uploadedFileDate = ff.getLastWrite();
+      startPrint = true;
+      setLcdMode(LcdMode::LOG);
+    } else {
+      lcdMode = (LcdMode)( ((int)lcdMode+1) % 2);
+    }
+  }
 }
 
 void setLcdMode(LcdMode mode) {
   lcdMode = mode;
-  drawLcd();
+  //drawLcd();
 }
 
 void setup() {
@@ -650,13 +662,14 @@ void setup() {
   u8g2.setFont(u8g2_font_5x8_tf);
   u8g2.setFontPosTop();
   u8g2.setFontMode(1);
+  //u8g2.setBusClock(950000); 
 
   pinMode(PIN_BT1, INPUT_PULLUP);
   pinMode(PIN_BT2, INPUT_PULLUP);
   pinMode(PIN_BT3, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_BT1), bt1Changed, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_BT2), bt2Changed, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(PIN_BT3), bt3Pressed, FALLING);
+  attachInterrupt(digitalPinToInterrupt(PIN_BT3), bt3Changed, CHANGE);
 
   File dir = storageFS.open("/");
   uint8_t i=0;
