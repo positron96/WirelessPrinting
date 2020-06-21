@@ -82,9 +82,20 @@ String lcdLines[N_LINES];
 U8G2_ST7920_128X64_F_HW_SPI u8g2(U8G2_R0, PIN_CE_LCD); 
 
 #define PIN_BT1  D1
-#define PIN_BT2  D3
+#define PIN_BT2  D2
+#define PIN_BT3  D3
 
-#define PIN_CE_SD  D2
+#define PIN_CE_SD  D4
+
+enum class LcdMode {
+  LOG, FILE_BROWSER
+} ;
+LcdMode lcdMode = LcdMode::FILE_BROWSER;
+int cursorPos=0;
+
+#define MAX_FILES 12
+String files[MAX_FILES];
+int lcdTopFile=0;
 
 
 // The sketch on the ESP
@@ -152,7 +163,7 @@ inline void telnetSend(const String line) {
   if (serverClient && serverClient.connected())     // send data to telnet client if connected
     serverClient.println(line);
 
-  addLcdLine(line.c_str());
+  addLcdLog(line.c_str());
 }
 
 bool isFloat(const String value) {
@@ -247,19 +258,30 @@ inline void lcd(const String text) {
 }
 
 inline void ilcd(const String text) {
+  if(lcdMode != LcdMode::LOG) return;
   lcdLines[0] = text;
   drawLcd();
 }
 
 void drawLcd() {
   u8g2.clearBuffer(); 
-  for(int i=0; i<N_LINES; i++) {
-    u8g2.drawStr(0, i*FH, lcdLines[i].c_str() ); 
-  }    
+  if(lcdMode == LcdMode::LOG) {
+    for(int i=0; i<N_LINES; i++) {
+      u8g2.drawStr(0, i*FH, lcdLines[i].c_str() ); 
+    }    
+  } else {
+    for(int i = lcdTopFile; i<MAX_FILES; i++) {
+      int y = (i-lcdTopFile)*FH;
+      u8g2.drawStr(6, y, files[i].c_str() );
+      if(cursorPos==i) u8g2.drawStr(0, y, ">");
+    }
+  }
   u8g2.sendBuffer();
 }
 
-void addLcdLine(String line) {
+void addLcdLog(String line) {
+  if(lcdMode != LcdMode::LOG) return;
+
   for(int i=1; i<N_LINES-1; i++) {
     lcdLines[i] = lcdLines[i+1];
   }
@@ -569,7 +591,16 @@ inline String stringify(bool value) {
 ICACHE_RAM_ATTR void btChanged(uint8_t pin) {
   uint8_t val = digitalRead(pin);
   if(val == LOW) { // pressed
-    addLcdLine(pin==PIN_BT1 ? "UP" : "DOWN");
+    //addLcdLog(pin==PIN_BT1 ? "UP" : "DOWN");
+    if(lcdMode == LcdMode::FILE_BROWSER) {
+      cursorPos += pin==PIN_BT1 ? -1 : 1;
+      if(cursorPos >= MAX_FILES) cursorPos=MAX_FILES-1;
+      if(cursorPos<0) cursorPos=0;
+      int t = cursorPos - lcdTopFile;
+      if(t<0) lcdTopFile = cursorPos;
+      if(t >= N_LINES) lcdTopFile = cursorPos-N_LINES+1;
+      //drawLcd();
+    }
   }
 }
 
@@ -585,6 +616,23 @@ ICACHE_RAM_ATTR void bt2Changed() {
   if(millis() < lastChange+10) return;
   lastChange = millis();
   btChanged(PIN_BT2);
+}
+
+ICACHE_RAM_ATTR void bt3Pressed() {
+  static long lastChange = millis();
+  if(millis() < lastChange+10) return;
+  lastChange = millis();
+  
+  if (isPrinting || !printerConnected) return ;
+  if (!files[cursorPos]) return;
+  uploadedFullname = files[cursorPos];
+  startPrint = true;
+  setLcdMode(LcdMode::LOG);
+}
+
+void setLcdMode(LcdMode mode) {
+  lcdMode = mode;
+  drawLcd();
 }
 
 void setup() {
@@ -605,9 +653,28 @@ void setup() {
 
   pinMode(PIN_BT1, INPUT_PULLUP);
   pinMode(PIN_BT2, INPUT_PULLUP);
+  pinMode(PIN_BT3, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_BT1), bt1Changed, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_BT2), bt2Changed, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_BT3), bt3Pressed, FALLING);
 
+  File dir = storageFS.open("/");
+  uint8_t i=0;
+  if (dir) {
+    File file;
+    while ( file = dir.openNextFile() ) {
+      files[i++] = String(file.name()) + (file.isDirectory() ? "/" : "");
+      file.close();
+      //file.close();
+      //file = dir.openNextFile();
+      if(i==MAX_FILES) break;
+    }
+    dir.close();
+    setLcdMode(LcdMode::FILE_BROWSER);
+  } else {
+    setLcdMode(LcdMode::LOG);
+    ilcd(String("SD: ")+ storageFS.activeSD() );
+  } 
 
   for (int t = 0; t < MAX_SUPPORTED_EXTRUDERS; t++)
     toolTemperature[t] = { "0.0", "0.0" };
@@ -1138,4 +1205,5 @@ void loop() {
     AsyncElegantOTA.loop();
   #endif
 
+  drawLcd();
 }
