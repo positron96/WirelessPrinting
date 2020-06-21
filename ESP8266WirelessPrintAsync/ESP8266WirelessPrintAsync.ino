@@ -16,8 +16,11 @@
 #include <AsyncElegantOTA.h>      // https://github.com/ayushsharma82/AsyncElegantOTA
 #include <SPIFFSEditor.h>
 
+#include <U8g2lib.h>
+
 #include "CommandQueue.h"
 
+#ifdef USE_NEOPIXELS
 #include <NeoPixelBus.h>
 
 const uint16_t PixelCount = 20; // this example assumes 4 pixels, making it smaller will cause a failure
@@ -33,6 +36,7 @@ RgbColor black(0);
   NeoPixelBus<NeoGrbFeature, NeoEsp8266Uart1Ws2813Method> strip(PixelCount); // ESP8266 always uses GPIO2 = D4
 #elif defined(ESP32)
   NeoPixelBus<NeoGrbFeature, Neo800KbpsMethod> strip(PixelCount, PixelPin);
+#endif
 #endif
 
 // On ESP8266 use the normal Serial() for now, but name it PrinterSerial for compatibility with ESP32
@@ -65,6 +69,23 @@ const uint32_t serialBauds[] = { 115200, 250000, 57600 };    // Marlin valid bau
 
 #define API_VERSION     "0.1"
 #define VERSION         "1.3.10"
+
+#ifdef ESP8266
+  #define PIN_CE_LCD D8  // wemos mini
+#else
+  #define PIN_CE_LCD 10
+#endif
+
+#define N_LINES 8
+#define FH   8
+String lcdLines[N_LINES];
+U8G2_ST7920_128X64_F_HW_SPI u8g2(U8G2_R0, PIN_CE_LCD); 
+
+#define PIN_BT1  D1
+#define PIN_BT2  D3
+
+#define PIN_CE_SD  D2
+
 
 // The sketch on the ESP
 bool ESPrestartRequired;  // Set this flag in the callbacks to restart ESP
@@ -130,6 +151,8 @@ inline void setLed(const bool status) {
 inline void telnetSend(const String line) {
   if (serverClient && serverClient.connected())     // send data to telnet client if connected
     serverClient.println(line);
+
+  addLcdLine(line.c_str());
 }
 
 bool isFloat(const String value) {
@@ -220,6 +243,28 @@ inline bool parsePosition(const String response) {
 
 inline void lcd(const String text) {
   commandQueue.push("M117 " + text);
+  ilcd(text);
+}
+
+inline void ilcd(const String text) {
+  lcdLines[0] = text;
+  drawLcd();
+}
+
+void drawLcd() {
+  u8g2.clearBuffer(); 
+  for(int i=0; i<N_LINES; i++) {
+    u8g2.drawStr(0, i*FH, lcdLines[i].c_str() ); 
+  }    
+  u8g2.sendBuffer();
+}
+
+void addLcdLine(String line) {
+  for(int i=1; i<N_LINES-1; i++) {
+    lcdLines[i] = lcdLines[i+1];
+  }
+  lcdLines[N_LINES-1] = line;
+  drawLcd();
 }
 
 inline void playSound() {
@@ -520,16 +565,49 @@ inline String stringify(bool value) {
   return value ? "true" : "false";
 }
 
+
+ICACHE_RAM_ATTR void btChanged(uint8_t pin) {
+  uint8_t val = digitalRead(pin);
+  if(val == LOW) { // pressed
+    addLcdLine(pin==PIN_BT1 ? "UP" : "DOWN");
+  }
+}
+
+ICACHE_RAM_ATTR void bt1Changed() {
+  static long lastChange = millis();
+  if(millis() < lastChange+10) return;
+  lastChange = millis();
+  btChanged(PIN_BT1);
+}
+
+ICACHE_RAM_ATTR void bt2Changed() {
+  static long lastChange = millis();
+  if(millis() < lastChange+10) return;
+  lastChange = millis();
+  btChanged(PIN_BT2);
+}
+
 void setup() {
   #if defined(LED_BUILTIN)
     pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
   #endif
 
   #ifdef USE_FAST_SD
-    storageFS.begin(true);
+    storageFS.begin(true, PIN_CE_SD);
   #else
-    storageFS.begin(false);
+    storageFS.begin(false, PIN_CE_SD);
   #endif
+
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_5x8_tf);
+  u8g2.setFontPosTop();
+  u8g2.setFontMode(1);
+
+  pinMode(PIN_BT1, INPUT_PULLUP);
+  pinMode(PIN_BT2, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_BT1), bt1Changed, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_BT2), bt2Changed, CHANGE);
+
 
   for (int t = 0; t < MAX_SUPPORTED_EXTRUDERS; t++)
     toolTemperature[t] = { "0.0", "0.0" };
@@ -901,6 +979,7 @@ void ReceiveResponses() {
     if (ch != '\n')
       serialResponse += ch;
     else {
+
       bool incompleteResponse = false;
       String responseDetail = "";
 
@@ -960,6 +1039,8 @@ void ReceiveResponses() {
     serialResponse = "";
     restartSerialTimeout();
   }
+
+  #ifdef USE_NEOPIXELS
   // this resets all the neopixels to an off state
   strip.Begin();
   strip.Show();
@@ -972,6 +1053,7 @@ void ReceiveResponses() {
     strip.SetPixelColor(a, white);
   }
   strip.Show(); 
+  #endif
 }
 
 void loop() {
@@ -1055,4 +1137,5 @@ void loop() {
   #ifdef OTA_UPDATES
     AsyncElegantOTA.loop();
   #endif
+
 }
